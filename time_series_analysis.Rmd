@@ -1,5 +1,91 @@
----
-title: "time_series_analysis"
-output: html_document
----
+library(forecast)
+library(tseries)
+library(zoo)
 
+# Function to reverse differencing applied to forecasted value
+#
+# Args:
+#   forecasted_value: The forecasted value after differencing
+#   d1: The time series after the first differencing operation (lag 1)
+#   d3: The time series after the second differencing operation (lag 3 on the first differenced series)
+#   train_set: The original training time series
+#
+# Returns:
+#   The forecasted value after reversing the differencing operations
+reverse_differencing <- function(forecasted_value, d1, d3, train_set) {
+  # Reverse the seasonal difference (lag 12). The last value of d3 is added.
+  step1 <- forecasted_value + d3[length(d3) - 12 + 1]
+  # Reverse the second difference (lag 3). The last value of d1 is added.
+  step2 <- step1 + d1[length(d1) - 3 + 1]
+  # Reverse the first difference (lag 1). The last value of the original training set is added.
+  step3 <- step2 + train_set[length(train_set)]
+  return(step3)
+}
+
+# Extract the starting year, month, and day from the 'Period' column of the dataframe 'df'.
+start_year <- as.numeric(format(min(df$Period), "%Y"))
+start_month <- as.numeric(format(min(df$Period), "%m"))
+start_day <- as.numeric(format(min(df$Period), "%d"))
+
+# Create a time series object 'ts_data' from the 'Average_cost' column of df.
+# The time series starts at the extracted date and has a monthly frequency (12 periods per year).
+ts_data <- ts(df['Average_cost'], start=c(start_year, start_month), frequency=12)
+
+# Define the size of the training set
+train_size <- round(length(ts_data) * 0.8)
+# Define the forecast horizon
+horizon <- 1
+# Calculate the number of rolling steps for forecasting.
+rolling_steps <- length(ts_data) - train_size
+
+# Initialize a time series object 'actuals' containing the actual values from the test set.
+# These are the values that will be compared against the forecasts.
+actuals <- ts_data[(train_size + 1):length(ts_data)]
+# Initialize a numeric vector 'predictions' to store the forecasted values from each rolling step.
+predictions <- numeric(rolling_steps)
+
+# Loop through the rolling forecast steps.
+for (i in 1:rolling_steps) {
+  # Create the training set for the current iteration.
+  # It includes the initial training data plus the subsequent 'i-1' observations.
+  train_set <- ts_data[1:(train_size + i - 1)]
+
+  # Apply differencing to the training set.
+  # First difference (lag 1).
+  test_diff <- diff(train_set, differences=1)
+  # Second difference (lag 3 on the first differenced series).
+  test_diff3 <- diff(test_diff, lag=3, differences=1)
+  # Third difference (lag 12 on the second differenced series).
+  test_diff_final <- diff(test_diff3, lag=12, differences=1)
+
+  # Fit an ARIMA model to the differenced training data using automatic selection of model order.
+  fit <- auto.arima(test_diff_final)
+
+  # Forecast one step ahead using the fitted ARIMA model. Extract the mean forecast.
+  forecasted_value <- forecast(fit, h=1)$mean[1]
+
+  # Reverse the differencing to get the forecast in the original scale.
+  predictions[i] <- reverse_differencing(forecasted_value, test_diff, test_diff3, train_set)
+}
+
+# Create a time series object 'predictions_ts' from the 'predictions' vector.
+# The time series starts at the time corresponding to the first forecasted value
+# and has the same frequency as the original data.
+predictions_ts <- ts(predictions, start=time(ts_data)[train_size + 1], frequency=12)
+
+# Specify the filename for the saved plot.
+plot_filename <- "rolling_forecast_vs_actuals.png"
+
+# Open a graphics device to save the plot as a PNG file.
+png(filename = plot_filename, width = 800, height = 600) # You can adjust width and height
+
+# Create the plot.
+plot(ts_data, col='black', main='Rolling Forecast vs Actuals', ylab='Value')
+lines(predictions_ts, col='red', lty=2)
+legend("topleft", legend=c("Actual", "Predicted"), col=c("black", "red"), lty=c(1,2))
+
+# Close the graphics device to save the plot to the specified file.
+dev.off()
+
+# Print the accuracy measures comparing the forecasted values ('predictions_ts') with the actual values ('actuals').
+print(accuracy(predictions_ts, actuals))
